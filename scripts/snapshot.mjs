@@ -18,6 +18,7 @@ const KNOWN = {
   "0x000000000004444c5dc75cb358380d2e3de08a90": "Uniswap v4 pools",
   "0x000000000022d473030f116ddee9f6b43ac78ba3": "Permit2",
   "0x3620540c994433d7b4a628c46d2ed5f92572ea07": "Token contract",
+  "0xa93807cd89a99bb564c7a887ab49cc4ecc3c9226": "Launch auction",
   "0xc8f8e2f59dd95ff67c3d39109eca2e2a017d4c8a": "Visualize Value"
 };
 const RPCS = [
