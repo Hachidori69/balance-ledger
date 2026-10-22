@@ -536,27 +536,96 @@ function toast(t) {
   clearTimeout(toastTimer); toastTimer = setTimeout(() => (el.hidden = true), 2200);
 }
 
+/* ---------- Multicall3: ~250 reads per request ---------- */
+const MULTICALL = "0xca11bde05977b3631167028862be2a173976ca11";
+const TRANSFER_TOPIC = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef";
+function encAggregate3(calls) {
+  const tuples = calls.map((c) => {
+    const len = c.data.length / 2;
+    return encAddr(c.target) + encUint(1) + encUint(96) + encUint(len) + c.data.padEnd(Math.ceil(c.data.length / 64) * 64, "0");
+  });
+  const offs = []; let cur = calls.length * 32;
+  for (const t of tuples) { offs.push(encUint(cur)); cur += t.length / 2; }
+  return "82ad56cb" + encUint(32) + encUint(calls.length) + offs.join("") + tuples.join("");
+}
+function decAggregate3(hex) {
+  const h = hex.slice(2);
+  const Wb = (b) => BigInt("0x" + h.slice(b * 2, b * 2 + 64));
+  const arr = Number(Wb(0)), n = Number(Wb(arr)), base = arr + 32;
+  const out = [];
+  for (let i = 0; i < n; i++) {
+    const t = base + Number(Wb(base + i * 32));
+    const ok = Wb(t) !== 0n;
+    const d = t + Number(Wb(t + 32));
+    const len = Number(Wb(d));
+    out.push(ok ? "0x" + h.slice((d + 32) * 2, (d + 32 + len) * 2) : null);
+  }
+  return out;
+}
+async function multicall(calls, size = 250, onProgress) {
+  const chunks = [];
+  for (let i = 0; i < calls.length; i += size) chunks.push(calls.slice(i, i + size));
+  let done = 0;
+  const parts = await pool(chunks, 3, async (chunk) => {
+    for (let attempt = 0; ; attempt++) {
+      try {
+        const r = decAggregate3(await single(ethCallReq(MULTICALL, encAggregate3(chunk))));
+        done += chunk.length; if (onProgress) onProgress(done / calls.length);
+        return r;
+      } catch (e) { if (attempt >= 2) return chunk.map(() => null); }
+    }
+  });
+  return parts.flat();
+}
+async function readWallets(fromIndex, total, onProgress) {
+  const calls = [];
+  for (let s = fromIndex; s < total; s += 64) calls.push({ target: ART, data: SEL.page + encUint(s) + encUint(64) });
+  const res = await multicall(calls, 20, onProgress);
+  const list = [];
+  res.forEach((hex, k) => {
+    if (!hex) return;
+    const { wallets, balances } = decPage(hex);
+    wallets.forEach((w, i) => list.push({ addr: w.toLowerCase(), id: fromIndex + k * 64 + i + 1, bal: balances[i], ink: [0n, 0n, 0n, 0n], hist: null }));
+  });
+  return list;
+}
+async function readDetails(addrs, onProgress) {
+  const calls = [];
+  for (const a of addrs) {
+    calls.push({ target: TOKEN, data: SEL.balanceOf + encAddr(a) });
+    calls.push({ target: TOKEN, data: SEL.historyOf + encAddr(a) });
+    calls.push({ target: TOKEN, data: SEL.inkOf + encAddr(a) });
+  }
+  const res = await multicall(calls, 240, onProgress);
+  const out = new Map();
+  addrs.forEach((a, i) => out.set(a, { bal: res[i * 3] ? word(res[i * 3], 0) : null, hist: decHistory(res[i * 3 + 1]), ink: res[i * 3 + 2] ? decInk(res[i * 3 + 2]) : null }));
+  return out;
+}
+function applyKnown(r) {
+  if (KNOWN[r.addr]) { r.label = KNOWN[r.addr]; if (r.addr !== "0xc8f8e2f59dd95ff67c3d39109eca2e2a017d4c8a") r.contract = true; }
+}
+
 /* ---------- Register (all wallets) ---------- */
 let rows = [], byAddr = new Map(), shown = 50, galleryShown = 0, currentAddr = null;
+let rawRows = [], lastBlock = 0, liveTimer = null, catchingUp = false;
 const state = { sort: "balance", ink: "all", q: "", hideContracts: true };
-const CACHE_KEY = "balance-ledger-v1";
 
 function progress(f) {
   $("#progress").hidden = f >= 1;
   $("#progressBar").style.width = Math.round(f * 100) + "%";
 }
-function serialize(r) { return { ...r, bal: r.bal.toString(), ink: r.ink.map(String), hist: r.hist ? Object.fromEntries(Object.entries(r.hist).map(([k, v]) => [k, v.toString()])) : null }; }
-function revive(r) { return { ...r, bal: BigInt(r.bal), ink: r.ink.map(BigInt), hist: r.hist ? Object.fromEntries(Object.entries(r.hist).map(([k, v]) => [k, BigInt(v)])) : null }; }
 
-/* Snapshot rows: [addr, id, bal, peak, transfersIn, transfersOut, comebacks, emptied,
-   statements, firstReceipt, received, sent, inkC, inkM, inkY, inkK, contract, label] */
+/* Snapshot rows: [addr, id, balance, peak, transfersIn, transfersOut, returnsFromZero, timesEmptied,
+   statementsConverted, firstReceipt, inkC, inkM, inkY, inkK, contract, label]
+   balance and peak are in tokens; ink is parts per 10,000. */
+const tokWei = (x) => BigInt(Math.round((x || 0) * 1e4)) * 10n ** 14n;
 function fromSnapshotRow(a) {
   const B = (x) => BigInt(x || 0);
   return {
-    addr: a[0], id: a[1], bal: B(a[2]), ink: [B(a[12]), B(a[13]), B(a[14]), B(a[15])],
-    hist: { peak: B(a[3]), transfersIn: B(a[4]), transfersOut: B(a[5]), comebacks: B(a[6]), emptied: B(a[7]),
-      statements: B(a[8]), firstReceipt: B(a[9]), received: B(a[10]), sent: B(a[11]), contributed: 0n },
-    contract: !!a[16], label: a[17] || undefined
+    addr: a[0], id: a[1], bal: tokWei(a[2]), ink: [B(a[10]), B(a[11]), B(a[12]), B(a[13])],
+    hist: { peak: tokWei(a[3]), transfersIn: B(a[4]), transfersOut: B(a[5]), comebacks: B(a[6]), emptied: B(a[7]),
+      statements: B(a[8]), firstReceipt: B(a[9]) },
+    contract: !!a[14], label: a[15] || undefined
   };
 }
 async function loadSnapshot() {
@@ -564,58 +633,38 @@ async function loadSnapshot() {
     const r = await fetch("data/register.json", { cache: "no-cache" });
     if (!r.ok) return false;
     const snap = await r.json();
-    if (!snap || !Array.isArray(snap.rows) || !snap.rows.length) return false;
-    setRows(snap.rows.map(fromSnapshotRow), snap.t, "Snapshot");
+    if (!snap || !Array.isArray(snap.rows) || !snap.rows.length || snap.rows[0].length !== 16) return false;
+    rawRows = snap.rows.map(fromSnapshotRow);
+    lastBlock = snap.block || 0;
+    setRows(rawRows, snap.t, "Snapshot");
     return true;
   } catch (e) { return false; }
 }
 
 async function loadRegister(force) {
-  if (!force) {
-    if (await loadSnapshot()) return;
-    try {
-      const c = JSON.parse(localStorage.getItem(CACHE_KEY) || "null");
-      if (c && Date.now() - c.t < 10 * 60 * 1000) { setRows(c.rows.map(revive), c.t); return; }
-    } catch (e) { /* no cache */ }
-  }
+  if (!force && await loadSnapshot()) { startLive(); return; }
   $("#refreshBtn").disabled = true;
   progress(0.02);
   try {
+    lastBlock = Number(await single({ method: "eth_blockNumber", params: [] }));
     const total = Number(word(await single(ethCallReq(ART, SEL.totalSupply)), 0));
-    const pageReqs = [];
-    for (let s = 0; s < total; s += 64) pageReqs.push(ethCallReq(ART, SEL.page + encUint(s) + encUint(64)));
-    const pages = await batch(pageReqs, 10, (f) => progress(0.02 + f * 0.13));
-    const list = [];
-    pages.forEach((hex, pi) => {
-      if (!hex) return;
-      const { wallets, balances } = decPage(hex);
-      wallets.forEach((w, i) => list.push({ addr: w.toLowerCase(), id: pi * 64 + i + 1, bal: balances[i], ink: [0n, 0n, 0n, 0n], hist: null }));
-    });
-    list.forEach((r) => { if (KNOWN[r.addr]) { r.label = KNOWN[r.addr]; if (r.addr !== "0xc8f8e2f59dd95ff67c3d39109eca2e2a017d4c8a") r.contract = true; } });
-
-    // Show the balance ranking right away; history and ink fill in behind it.
-    setRows(list, Date.now(), "Loading details");
-
-    const top = [...list].sort((a, b) => (b.bal > a.bal ? 1 : b.bal < a.bal ? -1 : 0)).slice(0, 60);
-    const codes = await batch(top.map((r) => ({ method: "eth_getCode", params: [r.addr, "latest"] })), 30);
-    top.forEach((r, i) => { if (codes[i] && codes[i] !== "0x") r.contract = true; });
+    const list = await readWallets(0, total, (f) => progress(0.02 + f * 0.13));
+    list.forEach(applyKnown);
+    rawRows = list;
+    setRows(rawRows, Date.now(), "Loading details");
 
     // Details in balance order so the top of the table completes first.
     const order = [...list].sort((a, b) => (b.bal > a.bal ? 1 : b.bal < a.bal ? -1 : 0));
-    const CH = 200;
+    const CH = 2000;
     for (let s = 0; s < order.length; s += CH) {
       const part = order.slice(s, s + CH);
-      const reqs = [];
-      for (const r of part) { reqs.push(ethCallReq(TOKEN, SEL.historyOf + encAddr(r.addr))); reqs.push(ethCallReq(TOKEN, SEL.inkOf + encAddr(r.addr))); }
-      const res = await batch(reqs, 20);
-      part.forEach((r, i) => { r.hist = decHistory(res[i * 2]); r.ink = decInk(res[i * 2 + 1]); });
+      const d = await readDetails(part.map((r) => r.addr));
+      part.forEach((r) => { const x = d.get(r.addr); if (x) { if (x.bal != null) r.bal = x.bal; r.hist = x.hist; r.ink = x.ink || r.ink; } });
       progress(0.15 + 0.85 * Math.min(1, (s + CH) / order.length));
-      setRows(list, Date.now(), s + CH < order.length ? "Loading details" : "Live", true);
+      setRows(rawRows, Date.now(), s + CH < order.length ? "Loading details" : "Live", true);
     }
-
     progress(1);
-    const t = Date.now();
-    try { localStorage.setItem(CACHE_KEY, JSON.stringify({ t, rows: list.map(serialize) })); } catch (e) { /* storage full or blocked */ }
+    startLive();
   } catch (e) {
     progress(1);
     if (!rows.length) $("#tbody").innerHTML = '<tr><td colspan="8">Couldn\'t read the register from Ethereum. The public nodes may be busy. Try "Read live now" in a minute.</td></tr>';
@@ -623,6 +672,54 @@ async function loadRegister(force) {
     $("#refreshBtn").disabled = false;
   }
 }
+
+/* Keeps the register current: reads only wallets with BALANCE transfers since the last check. */
+async function catchUp() {
+  if (catchingUp || !lastBlock || document.hidden) return;
+  catchingUp = true;
+  try {
+    const head = Number(await single({ method: "eth_blockNumber", params: [] }));
+    if (head <= lastBlock) return;
+    if (head - lastBlock > 20000) { lastBlock = head; return; } // too far behind; the next snapshot covers it
+    const touched = new Set();
+    for (let b = lastBlock + 1; b <= head; b += 2000) {
+      const end = Math.min(head, b + 1999);
+      const logs = await single({ method: "eth_getLogs", params: [{ address: TOKEN, topics: [TRANSFER_TOPIC], fromBlock: "0x" + b.toString(16), toBlock: "0x" + end.toString(16) }] });
+      for (const l of logs || []) for (const t of [l.topics[1], l.topics[2]]) {
+        if (!t) continue;
+        const a = "0x" + t.slice(26).toLowerCase();
+        if (!/^0x0{40}$/.test(a)) touched.add(a);
+      }
+    }
+    const total = Number(word(await single(ethCallReq(ART, SEL.totalSupply)), 0));
+    const known = rawRows.length;
+    const added = total > known ? await readWallets(known, total) : [];
+    added.forEach((r) => { applyKnown(r); touched.add(r.addr); });
+    const index = new Map(rawRows.map((r, i) => [r.addr, i]));
+    for (const r of added) if (!index.has(r.addr)) { index.set(r.addr, rawRows.length); rawRows.push(r); }
+    const addrs = [...touched].filter((a) => index.has(a));
+    if (addrs.length) {
+      const d = await readDetails(addrs);
+      for (const a of addrs) {
+        const r = rawRows[index.get(a)], x = d.get(a);
+        if (!x) continue;
+        if (x.bal != null) r.bal = x.bal;
+        if (x.hist) r.hist = x.hist;
+        if (x.ink) r.ink = x.ink;
+      }
+    }
+    lastBlock = head;
+    setRows(rawRows, Date.now(), "Live", true);
+    if (currentAddr && touched.has(currentAddr)) lookup(currentAddr, { quiet: true });
+  } catch (e) { /* try again on the next tick */ }
+  finally { catchingUp = false; }
+}
+function startLive() {
+  clearInterval(liveTimer);
+  catchUp();
+  liveTimer = setInterval(catchUp, 30000);
+}
+document.addEventListener("visibilitychange", () => { if (!document.hidden) catchUp(); });
 
 function setRows(list, t, source, keepView) {
   rows = list.map((r) => {
@@ -632,10 +729,13 @@ function setRows(list, t, source, keepView) {
       active: Number((h.transfersIn || 0n) + (h.transfersOut || 0n)) };
   });
   byAddr = new Map(rows.map((r) => [r.addr, r]));
-  const when = new Date(t).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-  $("#updated").textContent = (source === "Snapshot" ? "Snapshot from " : source === "Loading details" ? "Loading details · balances from " : "Updated ") + when;
+  const when = new Date(t).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: source === "Live" ? "2-digit" : undefined });
+  $("#updated").textContent =
+    source === "Snapshot" ? "Snapshot from " + when + " · catching up" :
+    source === "Loading details" ? "Loading details · balances from " + when :
+    "Live · block " + fmtInt(lastBlock) + " · checked " + when;
   renderSummary();
-  if (!keepView) { shown = 50; }
+  if (!keepView) shown = 50;
   renderTable();
   if (!keepView || !galleryShown) { galleryShown = 0; $("#gallery").innerHTML = ""; renderGallery(); }
   if (currentAddr) markRank(currentAddr);
@@ -739,13 +839,12 @@ async function renderGallery() {
 function showMsg(t) { const m = $("#lookupMsg"); m.textContent = t; m.hidden = !t; }
 const isAddr = (a) => /^0x[0-9a-fA-F]{40}$/.test(a);
 
-async function lookup(addrRaw, { scroll } = {}) {
+async function lookup(addrRaw, { scroll, quiet } = {}) {
   const addr = (addrRaw || "").trim();
   if (!isAddr(addr)) { showMsg("That doesn't look like a wallet address. Paste a full 0x address (42 characters)."); return; }
   const a = addr.toLowerCase();
   currentAddr = a;
-  showMsg("");
-  $("#addrInput").value = addr;
+  if (!quiet) { showMsg(""); $("#addrInput").value = addr; }
   try { history.replaceState(null, "", "?address=" + a); } catch (e) { /* not allowed in this frame */ }
 
   let res;
@@ -771,7 +870,8 @@ async function lookup(addrRaw, { scroll } = {}) {
   markRank(a);
   if (scroll) $("#proof").scrollIntoView({ behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth", block: "start" });
 
-  $("#artImg").hidden = true; $("#artPlaceholder").hidden = false; $("#artPlaceholder").textContent = "Loading artwork";
+  if (quiet) artCache.delete(id); // balance changed, so the artwork image changed too
+  else { $("#artImg").hidden = true; $("#artPlaceholder").hidden = false; $("#artPlaceholder").textContent = "Loading artwork"; }
   try {
     const meta = await artFor(id);
     if (current !== w) return;
