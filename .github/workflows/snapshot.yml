@@ -1,33 +1,62 @@
 name: Update register snapshot
 
+# Rebuilds data/register.json and publishes the site to GitHub Pages.
+# The snapshot is not committed to the repository (it would bloat it);
+# the previous one is kept in the Actions cache so each run only re-reads what changed.
+
 on:
   schedule:
-    - cron: "*/15 * * * *"
+    - cron: "*/5 * * * *"
+  push:
+    branches: [main]
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
+  pages: write
+  id-token: write
 
 concurrency:
-  group: snapshot
+  group: pages
   cancel-in-progress: false
 
 jobs:
-  snapshot:
+  build-and-deploy:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
+
+      - name: Restore previous snapshot
+        uses: actions/cache/restore@v4
+        with:
+          path: data/register.json
+          key: register-${{ github.run_id }}
+          restore-keys: register-
+
       - name: Build snapshot
         env:
           RPC_URL: ${{ secrets.RPC_URL }}
         run: node scripts/snapshot.mjs
-      - name: Commit if changed
-        run: |
-          git config user.name "register-bot"
-          git config user.email "register-bot@users.noreply.github.com"
-          git add data/register.json
-          git diff --cached --quiet || (git commit -m "Update register snapshot" && git push)
+
+      - name: Save snapshot for the next run
+        uses: actions/cache/save@v4
+        with:
+          path: data/register.json
+          key: register-${{ github.run_id }}
+
+      - uses: actions/configure-pages@v5
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: .
+
+      - id: deployment
+        uses: actions/deploy-pages@v4
