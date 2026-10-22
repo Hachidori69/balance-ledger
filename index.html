@@ -273,7 +273,8 @@ footer code { font: 400 12px var(--font-mono); word-break: break-all; }
           <dl class="ledger" id="pLedger"></dl>
 
           <div class="actions">
-            <button class="btn" type="button" id="shareBtn">Download share card</button>
+            <button class="btn" type="button" id="shareXBtn">Share on X</button>
+            <button class="btn ghost" type="button" id="shareBtn">Download share card</button>
             <button class="btn ghost" type="button" id="copyLinkBtn">Copy link to this wallet</button>
             <a class="btn ghost" id="etherscanLink" href="#" target="_blank" rel="noopener">View on Etherscan</a>
           </div>
@@ -368,6 +369,7 @@ const KNOWN = {
   "0x000000000004444c5dc75cb358380d2e3de08a90": "Uniswap v4 pools",
   "0x000000000022d473030f116ddee9f6b43ac78ba3": "Permit2",
   "0x3620540c994433d7b4a628c46d2ed5f92572ea07": "Token contract",
+  "0xa93807cd89a99bb564c7a887ab49cc4ecc3c9226": "Launch auction",
   "0xc8f8e2f59dd95ff67c3d39109eca2e2a017d4c8a": "Visualize Value"
 };
 const RPCS = [
@@ -876,6 +878,7 @@ async function lookup(addrRaw, { scroll, quiet } = {}) {
     const meta = await artFor(id);
     if (current !== w) return;
     if (meta.image) { $("#artImg").src = meta.image; $("#artImg").alt = "Balance #" + id; $("#artImg").hidden = false; $("#artPlaceholder").hidden = true; }
+    cardFor(w).catch(() => {});
   } catch (e) { $("#artPlaceholder").textContent = "Artwork image unavailable"; }
 }
 let current = null;
@@ -921,10 +924,7 @@ function markRank(a) {
 }
 
 /* ---------- Share card ---------- */
-async function shareCard() {
-  const w = current; if (!w) return;
-  const btn = $("#shareBtn"); btn.disabled = true;
-  try {
+async function buildCard(w) {
     await document.fonts.ready;
     const W = 1600, H = 900, cv = document.createElement("canvas");
     cv.width = W; cv.height = H;
@@ -978,16 +978,73 @@ async function shareCard() {
     g.fillStyle = "#5d6063"; g.font = "400 18px 'Martian Mono', monospace";
     g.fillText("BALANCE LEDGER · READ FROM ETHEREUM", tx, 830);
 
-    const blob = await new Promise((r) => cv.toBlob(r, "image/png"));
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a"); a.href = url; a.download = "balance-" + w.id + ".png";
-    document.body.appendChild(a); a.click(); a.remove();
-    setTimeout(() => URL.revokeObjectURL(url), 5000);
+    return await new Promise((r) => cv.toBlob(r, "image/png"));
+}
+
+/* Cards are built ahead of time so the share sheet can open straight from the tap. */
+const cardCache = new Map();
+function cardFor(w) {
+  const key = w.addr + ":" + w.bal + ":" + w.ink.join(",");
+  if (!cardCache.has(key)) {
+    const p = buildCard(w);
+    p.catch(() => cardCache.delete(key));
+    cardCache.set(key, p);
+  }
+  return cardCache.get(key);
+}
+function downloadBlob(blob, name) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a"); a.href = url; a.download = name;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 5000);
+}
+async function shareCard() {
+  const w = current; if (!w) return;
+  const btn = $("#shareBtn"); btn.disabled = true;
+  try {
+    downloadBlob(await cardFor(w), "balance-" + w.id + ".png");
     toast("Share card downloaded");
   } catch (e) {
     toast("Couldn't build the card. Try again.");
   } finally { btn.disabled = false; }
 }
+
+function shareText(w) {
+  const lead = w.bal > 0n ? w.p.indexOf(Math.max(...w.p)) : -1;
+  const ink = lead >= 0 ? " · " + Math.round(w.p[lead]) + "% " + INK[lead].toLowerCase() + " ink" : " · at zero";
+  return "Balance #" + fmtInt(w.id) + " · " + fmtBal(w.bal) + " $BALANCE" + ink + "\n\nLook up your own Balance artwork:";
+}
+const walletLink = (w) => location.origin + location.pathname + "?address=" + w.addr;
+
+async function shareToX() {
+  const w = current; if (!w) return;
+  const text = shareText(w), link = walletLink(w);
+  const touch = matchMedia("(pointer: coarse)").matches;
+
+  // Phones: share the image itself through the system share sheet (pick X there).
+  if (touch && navigator.canShare) {
+    try {
+      const blob = await cardFor(w);
+      const file = new File([blob], "balance-" + w.id + ".png", { type: "image/png" });
+      if (navigator.canShare({ files: [file] })) {
+        await navigator.share({ files: [file], text: text + " " + link });
+        return;
+      }
+    } catch (e) {
+      if (e && e.name === "AbortError") return; // closed the share sheet
+    }
+  }
+
+  // Desktop: open a pre-filled post, and download the card to attach.
+  const intent = "https://x.com/intent/tweet?text=" + encodeURIComponent(text) + "&url=" + encodeURIComponent(link);
+  const win = window.open(intent, "_blank", "noopener");
+  if (!win) location.href = intent;
+  try {
+    downloadBlob(await cardFor(w), "balance-" + w.id + ".png");
+    toast("Card downloaded. Drag it into your post to attach it.");
+  } catch (e) { /* the post still opens without the image */ }
+}
+
 
 /* ---------- Wiring ---------- */
 $("#lookupForm").addEventListener("submit", (e) => { e.preventDefault(); lookup($("#addrInput").value); });
@@ -999,6 +1056,7 @@ $("#connectBtn").addEventListener("click", async () => {
   } catch (e) { showMsg("The wallet didn't share an address. You can paste it instead."); }
 });
 $("#shareBtn").addEventListener("click", shareCard);
+$("#shareXBtn").addEventListener("click", shareToX);
 $("#copyLinkBtn").addEventListener("click", async () => {
   const link = location.origin + location.pathname + "?address=" + currentAddr;
   try { await navigator.clipboard.writeText(link); toast("Link copied"); }
