@@ -533,9 +533,9 @@ function inkBar(p) {
     p.map((x, i) => '<span class="' + ["ic", "im", "iy", "ik"][i] + '" style="width:' + x + '%"></span>').join("") + "</div>";
 }
 let toastTimer;
-function toast(t) {
+function toast(t, ms = 2200) {
   const el = $("#toast"); el.textContent = t; el.hidden = false;
-  clearTimeout(toastTimer); toastTimer = setTimeout(() => (el.hidden = true), 2200);
+  clearTimeout(toastTimer); toastTimer = setTimeout(() => (el.hidden = true), ms);
 }
 
 /* ---------- Multicall3: ~250 reads per request ---------- */
@@ -1035,14 +1035,28 @@ async function shareToX() {
     }
   }
 
-  // Desktop: open a pre-filled post, and download the card to attach.
+  // Desktop: copy the card to the clipboard (paste it into the post), then open a pre-filled post.
+  // The clipboard write has to start before the new tab takes focus.
+  let copied = false;
+  if (navigator.clipboard && window.ClipboardItem) {
+    try {
+      await navigator.clipboard.write([new ClipboardItem({ "image/png": cardFor(w) })]);
+      copied = true;
+    } catch (e) { copied = false; }
+  }
   const intent = "https://x.com/intent/tweet?text=" + encodeURIComponent(text) + "&url=" + encodeURIComponent(link);
   const win = window.open(intent, "_blank", "noopener");
+  if (copied) {
+    const mac = /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent);
+    toast("Card copied. Press " + (mac ? "Cmd" : "Ctrl") + "+V in your post to add it.", 8000);
+  } else {
+    // Clipboard images not allowed in this browser: fall back to downloading the card.
+    try {
+      downloadBlob(await cardFor(w), "balance-" + w.id + ".png");
+      toast("Card downloaded. Drag it into your post to attach it.", 8000);
+    } catch (e) { /* the post still opens without the image */ }
+  }
   if (!win) location.href = intent;
-  try {
-    downloadBlob(await cardFor(w), "balance-" + w.id + ".png");
-    toast("Card downloaded. Drag it into your post to attach it.");
-  } catch (e) { /* the post still opens without the image */ }
 }
 
 
