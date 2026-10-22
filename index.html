@@ -1,0 +1,934 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Balance Ledger</title>
+<meta name="description" content="Look up any wallet's Balance artwork, its CMYK ink and history, and see the live leaderboard. Read directly from Ethereum.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@62..125,400..900&family=Instrument+Sans:wght@400;500;600&family=Martian+Mono:wght@400;500;700&display=swap">
+<style>
+/* Layout: a printer's ledger. Paper page, process-color bar across the top,
+   one lookup "proof" above the full register of every wallet. */
+:root {
+  --paper: #f7f7f3;
+  --surface: #ffffff;
+  --ink: #151616;
+  --muted: #5d6063;
+  --rule: #dcddd6;
+  --hover: #eeefe9;
+  --c: #00a0dc;
+  --m: #e4007c;
+  --y: #f2d400;
+  --k: #151616;
+  --swatch: #ffffff;
+  --good: #1f8a4c;
+  --warn: #b25b00;
+  --font-display: "Archivo", "Arial Narrow", "Helvetica Neue", Arial, sans-serif;
+  --font-body: "Instrument Sans", "Helvetica Neue", Arial, sans-serif;
+  --font-mono: "Martian Mono", ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --paper: #101112; --surface: #17181a; --ink: #ecece8; --muted: #9b9ea2;
+    --rule: #2b2d30; --hover: #1f2023; --k: #ecece8; --swatch: #f7f7f3;
+    --good: #4cc27c; --warn: #f0a24a; color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --paper: #101112; --surface: #17181a; --ink: #ecece8; --muted: #9b9ea2;
+  --rule: #2b2d30; --hover: #1f2023; --k: #ecece8; --swatch: #f7f7f3;
+  --good: #4cc27c; --warn: #f0a24a; color-scheme: dark;
+}
+
+* { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+body {
+  margin: 0; background: var(--paper); color: var(--ink);
+  font: 15px/1.55 var(--font-body);
+  padding-top: env(safe-area-inset-top, 0px);
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+}
+img { max-width: 100%; display: block; }
+a { color: inherit; }
+button, input, select { font: inherit; color: inherit; }
+:focus-visible { outline: 2px solid var(--m); outline-offset: 2px; }
+
+.wrap {
+  max-width: 1120px; margin: 0 auto;
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+}
+
+/* Process color bar */
+.colorbar { display: grid; grid-template-columns: repeat(4, 1fr); height: 6px; }
+.colorbar span:nth-child(1) { background: var(--c); }
+.colorbar span:nth-child(2) { background: var(--m); }
+.colorbar span:nth-child(3) { background: var(--y); }
+.colorbar span:nth-child(4) { background: #151616; }
+
+header.top { border-bottom: 1px solid var(--rule); }
+header.top .wrap { display: flex; align-items: flex-end; justify-content: space-between; gap: 16px; flex-wrap: wrap; padding-block: 28px 20px; }
+.brand { display: flex; align-items: center; gap: 14px; }
+.reg { width: 34px; height: 34px; flex: none; color: var(--ink); }
+h1 {
+  margin: 0; font-family: var(--font-display); font-weight: 850;
+  font-stretch: 125%; font-variation-settings: "wdth" 125;
+  font-size: clamp(28px, 5vw, 44px); line-height: 1; letter-spacing: -0.01em;
+  text-transform: uppercase;
+}
+.sub { margin: 6px 0 0; color: var(--muted); max-width: 60ch; font-size: 14px; }
+.netstat { font: 500 11px/1.4 var(--font-mono); color: var(--muted); letter-spacing: 0.04em; text-transform: uppercase; display: flex; align-items: center; gap: 8px; }
+.dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
+.dot.ok { background: var(--good); }
+.dot.err { background: var(--m); }
+
+.label {
+  font: 500 11px/1.3 var(--font-mono); letter-spacing: 0.08em;
+  text-transform: uppercase; color: var(--muted);
+}
+h2 {
+  margin: 0; font-family: var(--font-display); font-weight: 800;
+  font-variation-settings: "wdth" 110; font-size: 22px; letter-spacing: 0;
+  text-transform: uppercase; text-wrap: balance;
+}
+section { padding-block: 32px; border-bottom: 1px solid var(--rule); }
+.section-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin-bottom: 18px; }
+
+/* Lookup form */
+.lookup { display: flex; gap: 8px; flex-wrap: wrap; }
+.lookup input {
+  flex: 1 1 320px; min-width: 0; padding: 12px 14px;
+  background: var(--surface); border: 1px solid var(--rule); border-radius: 2px;
+  font: 400 14px var(--font-mono);
+}
+.btn {
+  padding: 12px 16px; border-radius: 2px; border: 1px solid var(--ink);
+  background: var(--ink); color: var(--paper); cursor: pointer;
+  font: 500 12px var(--font-mono); letter-spacing: 0.06em; text-transform: uppercase;
+  white-space: nowrap;
+}
+.btn:hover { background: var(--m); border-color: var(--m); color: #fff; }
+.btn.ghost { background: transparent; color: var(--ink); border-color: var(--rule); }
+.btn.ghost:hover { border-color: var(--ink); background: transparent; color: var(--ink); }
+.btn:disabled { opacity: 0.5; cursor: default; }
+.hint { color: var(--muted); font-size: 13px; margin: 10px 0 0; }
+.msg { margin-top: 14px; padding: 10px 14px; border-left: 3px solid var(--m); background: var(--surface); font-size: 14px; }
+
+/* Proof: the looked-up wallet */
+.proof { display: grid; grid-template-columns: minmax(0, 340px) minmax(0, 1fr); gap: 32px; margin-top: 24px; align-items: start; }
+@media (max-width: 760px) { .proof { grid-template-columns: minmax(0, 1fr); } }
+.artframe {
+  background: var(--swatch); border: 1px solid var(--rule); padding: 14px;
+  aspect-ratio: 4 / 5; max-width: 100%; display: grid; place-items: center; position: relative;
+}
+.artframe img { width: 100%; height: 100%; object-fit: contain; }
+.artframe .crop { position: absolute; width: 12px; height: 12px; border-color: #9a9a95; border-style: solid; }
+.crop.tl { top: -7px; left: -7px; border-width: 0 1px 1px 0; }
+.crop.tr { top: -7px; right: -7px; border-width: 0 0 1px 1px; }
+.crop.bl { bottom: -7px; left: -7px; border-width: 1px 1px 0 0; }
+.crop.br { bottom: -7px; right: -7px; border-width: 1px 0 0 1px; }
+.placeholder { color: #8b8b86; font: 500 12px var(--font-mono); text-align: center; padding: 20px; text-transform: uppercase; letter-spacing: 0.06em; }
+
+.idline { display: flex; align-items: baseline; gap: 14px; flex-wrap: wrap; }
+.bignum {
+  font-family: var(--font-display); font-weight: 850; font-variation-settings: "wdth" 120;
+  font-size: clamp(34px, 6vw, 56px); line-height: 1; font-variant-numeric: tabular-nums;
+}
+.addr { font: 400 13px var(--font-mono); color: var(--muted); word-break: break-all; }
+.tags { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 10px; }
+.tag {
+  font: 500 11px var(--font-mono); letter-spacing: 0.04em; text-transform: uppercase;
+  padding: 4px 8px; border: 1px solid var(--rule); border-radius: 2px; background: var(--surface);
+}
+.tag.zero { border-color: var(--m); color: var(--m); }
+
+.plates { margin-top: 22px; display: grid; gap: 8px; }
+.plate { display: grid; grid-template-columns: 74px minmax(0, 1fr) 64px; gap: 10px; align-items: center; font: 400 12px var(--font-mono); font-variant-numeric: tabular-nums; }
+.plate .track { height: 10px; background: var(--hover); position: relative; overflow: hidden; }
+.plate .fill { position: absolute; inset: 0 auto 0 0; }
+.plate .pct { text-align: right; }
+
+.ledger { margin-top: 22px; display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: 0; border-top: 1px solid var(--rule); }
+.ledger div { padding: 10px 0; border-bottom: 1px solid var(--rule); display: grid; gap: 2px; padding-right: 12px; }
+.ledger dd { margin: 0; font: 500 15px var(--font-mono); font-variant-numeric: tabular-nums; }
+.ledger dt { font: 500 10px var(--font-mono); letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); }
+.actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 22px; }
+
+/* Ink bar used in tables */
+.inkbar { display: flex; height: 10px; width: 100%; min-width: 80px; background: var(--hover); }
+.inkbar span { display: block; height: 100%; }
+.ic { background: var(--c); } .im { background: var(--m); } .iy { background: var(--y); } .ik { background: var(--k); }
+
+/* Register controls */
+.controls { display: flex; flex-wrap: wrap; gap: 14px 22px; align-items: flex-end; margin-bottom: 16px; }
+.field { display: grid; gap: 6px; }
+.field select, .field input[type="search"] {
+  padding: 9px 10px; border: 1px solid var(--rule); background: var(--surface); border-radius: 2px;
+  font: 400 13px var(--font-mono); min-width: 0;
+}
+.chips { display: flex; gap: 6px; flex-wrap: wrap; }
+.chip {
+  padding: 7px 10px; border: 1px solid var(--rule); background: var(--surface); border-radius: 2px;
+  font: 500 11px var(--font-mono); letter-spacing: 0.04em; text-transform: uppercase; cursor: pointer;
+  display: inline-flex; align-items: center; gap: 6px;
+}
+.chip[aria-pressed="true"] { border-color: var(--ink); background: var(--ink); color: var(--paper); }
+.chip .sw { width: 9px; height: 9px; display: inline-block; }
+.check { display: inline-flex; gap: 8px; align-items: center; font-size: 13px; color: var(--muted); cursor: pointer; }
+
+.progress { height: 3px; background: var(--hover); margin-bottom: 14px; overflow: hidden; }
+.progress div { height: 100%; width: 0; background: var(--m); transition: width 0.2s; }
+.summary { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 0; margin-bottom: 18px; border-top: 1px solid var(--rule); }
+.summary div { padding: 12px 12px 12px 0; border-bottom: 1px solid var(--rule); }
+.summary b { display: block; font: 700 20px var(--font-mono); font-variant-numeric: tabular-nums; }
+
+.tablewrap { overflow-x: auto; border-top: 1px solid var(--ink); }
+table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+th, td { padding: 9px 10px; text-align: left; border-bottom: 1px solid var(--rule); white-space: nowrap; }
+th { font: 500 10px var(--font-mono); letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); }
+td { font: 400 13px var(--font-mono); }
+td.num, th.num { text-align: right; }
+tbody tr { cursor: pointer; }
+tbody tr:hover { background: var(--hover); }
+tr.me td { background: color-mix(in srgb, var(--y) 22%, transparent); }
+td.rank { color: var(--muted); width: 44px; }
+td.ink { width: 140px; }
+.who { display: flex; align-items: center; gap: 8px; }
+.ctag { font-size: 10px; padding: 2px 5px; border: 1px solid var(--rule); color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; }
+@media (max-width: 640px) { .hide-sm { display: none; } }
+.more { margin-top: 14px; display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+
+/* Gallery */
+.gallery { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 18px; }
+.card { display: grid; gap: 8px; cursor: pointer; background: none; border: 0; padding: 0; text-align: left; }
+.card .artframe { padding: 8px; }
+.card .meta { font: 400 11px var(--font-mono); color: var(--muted); display: flex; justify-content: space-between; gap: 6px; }
+.card .meta b { color: var(--ink); font-weight: 500; }
+.card:hover .artframe { border-color: var(--ink); }
+
+footer { padding-block: 28px 40px; color: var(--muted); font-size: 13px; }
+footer p { margin: 0 0 8px; max-width: 75ch; }
+footer code { font: 400 12px var(--font-mono); word-break: break-all; }
+
+.toast {
+  position: fixed; left: 50%; bottom: calc(20px + env(safe-area-inset-bottom, 0px)); transform: translateX(-50%);
+  background: var(--ink); color: var(--paper); padding: 10px 16px; font: 500 12px var(--font-mono);
+  letter-spacing: 0.04em; border-radius: 2px; z-index: 20;
+}
+@media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+</style>
+</head>
+<body>
+
+<div class="colorbar" aria-hidden="true"><span></span><span></span><span></span><span></span></div>
+
+<header class="top">
+  <div class="wrap">
+    <div>
+      <div class="brand">
+        <svg class="reg" viewBox="0 0 34 34" aria-hidden="true">
+          <circle cx="17" cy="17" r="9" fill="none" stroke="currentColor" stroke-width="1.5"/>
+          <line x1="17" y1="1" x2="17" y2="33" stroke="currentColor" stroke-width="1.5"/>
+          <line x1="1" y1="17" x2="33" y2="17" stroke="currentColor" stroke-width="1.5"/>
+        </svg>
+        <h1>Balance Ledger</h1>
+      </div>
+      <p class="sub">Every wallet that receives BALANCE gets a permanent artwork. Look one up, read its ink, and see where it stands among all of them.</p>
+    </div>
+    <div class="netstat"><span class="dot" id="netdot"></span><span id="nettext">Connecting to Ethereum</span></div>
+  </div>
+</header>
+
+<main>
+  <section>
+    <div class="wrap">
+      <div class="section-head"><h2>Look up a wallet</h2><span class="label">Read-only</span></div>
+      <form class="lookup" id="lookupForm" autocomplete="off">
+        <input id="addrInput" type="text" inputmode="text" spellcheck="false" placeholder="0x… wallet address" aria-label="Wallet address">
+        <button class="btn" type="submit">Look up</button>
+        <button class="btn ghost" type="button" id="connectBtn">Use my wallet</button>
+      </form>
+      <p class="hint">"Use my wallet" only reads your address. It never asks you to sign or approve anything.</p>
+      <div id="lookupMsg" class="msg" hidden></div>
+
+      <div class="proof" id="proof" hidden>
+        <div>
+          <div class="artframe" id="artFrame">
+            <span class="crop tl"></span><span class="crop tr"></span><span class="crop bl"></span><span class="crop br"></span>
+            <div class="placeholder" id="artPlaceholder">Loading artwork</div>
+            <img id="artImg" alt="" hidden>
+          </div>
+        </div>
+        <div>
+          <div class="label">Balance artwork</div>
+          <div class="idline"><span class="bignum" id="pId">#—</span><span class="bignum" id="pBal" style="font-weight:500">—</span></div>
+          <div class="addr" id="pAddr"></div>
+          <div class="tags" id="pTags"></div>
+
+          <div class="plates" id="pPlates"></div>
+
+          <dl class="ledger" id="pLedger"></dl>
+
+          <div class="actions">
+            <button class="btn" type="button" id="shareBtn">Download share card</button>
+            <button class="btn ghost" type="button" id="copyLinkBtn">Copy link to this wallet</button>
+            <a class="btn ghost" id="etherscanLink" href="#" target="_blank" rel="noopener">View on Etherscan</a>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <div class="wrap">
+      <div class="section-head"><h2>The register</h2><span class="label" id="regCount">Every Balance artwork</span></div>
+
+      <div class="progress" id="progress" hidden><div id="progressBar"></div></div>
+      <div class="summary" id="summary"></div>
+
+      <div class="controls">
+        <div class="field">
+          <label class="label" for="sortSel">Rank by</label>
+          <select id="sortSel">
+            <option value="balance">Largest balance</option>
+            <option value="peak">Highest peak</option>
+            <option value="active">Most transfers</option>
+            <option value="comebacks">Returns from zero</option>
+            <option value="emptied">Times emptied</option>
+            <option value="statements">Statements converted</option>
+            <option value="balanced">Most balanced ink</option>
+            <option value="earliest">Earliest artworks</option>
+          </select>
+        </div>
+        <div class="field">
+          <span class="label">Ink</span>
+          <div class="chips" id="inkChips">
+            <button class="chip" type="button" data-ink="all" aria-pressed="true">All</button>
+            <button class="chip" type="button" data-ink="0" aria-pressed="false"><span class="sw ic"></span>Cyan-led</button>
+            <button class="chip" type="button" data-ink="1" aria-pressed="false"><span class="sw im"></span>Magenta-led</button>
+            <button class="chip" type="button" data-ink="2" aria-pressed="false"><span class="sw iy"></span>Yellow-led</button>
+            <button class="chip" type="button" data-ink="3" aria-pressed="false"><span class="sw ik"></span>Black-led</button>
+            <button class="chip" type="button" data-ink="zero" aria-pressed="false">At zero</button>
+          </div>
+        </div>
+        <div class="field">
+          <label class="label" for="searchBox">Find</label>
+          <input type="search" id="searchBox" placeholder="Address or #number">
+        </div>
+        <label class="check"><input type="checkbox" id="hideContracts" checked> Hide pools and contracts</label>
+      </div>
+
+      <div class="tablewrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Rank</th><th>Artwork</th><th>Wallet</th><th class="num">Balance</th><th>Ink</th>
+              <th class="num hide-sm">Peak</th><th class="num hide-sm">Transfers</th><th class="num hide-sm">From zero</th>
+            </tr>
+          </thead>
+          <tbody id="tbody">
+            <tr><td colspan="8" style="color:var(--muted)">Reading every Balance artwork from Ethereum…</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="more">
+        <button class="btn ghost" type="button" id="moreBtn" hidden>Show 50 more</button>
+        <button class="btn ghost" type="button" id="refreshBtn">Read live now</button>
+        <span class="label" id="updated"></span>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <div class="wrap">
+      <div class="section-head"><h2>Gallery</h2><span class="label">Follows the register's ranking and filters</span></div>
+      <div class="gallery" id="gallery"></div>
+      <div class="more"><button class="btn ghost" type="button" id="galleryMore">Load 12 more</button></div>
+    </div>
+  </section>
+</main>
+
+<footer>
+  <div class="wrap">
+    <p>A community tool. Not made by or affiliated with Jack Butcher or Visualize Value. Everything shown is read directly from Ethereum in your browser; nothing is stored or sent anywhere else.</p>
+    <p>BALANCE token <code>0x3620540c994433d7b4a628c46d2ed5f92572ea07</code> · Balance artworks <code>0x3f2ba6c00c386986686a429c52099aacd51b7e38</code></p>
+  </div>
+</footer>
+
+<div class="toast" id="toast" hidden></div>
+
+<script>
+"use strict";
+const TOKEN = "0x3620540c994433d7b4a628c46d2ed5f92572ea07";
+const ART = "0x3f2ba6c00c386986686a429c52099aacd51b7e38";
+const KNOWN = {
+  "0x000000000004444c5dc75cb358380d2e3de08a90": "Uniswap v4 pools",
+  "0x000000000022d473030f116ddee9f6b43ac78ba3": "Permit2",
+  "0x3620540c994433d7b4a628c46d2ed5f92572ea07": "Token contract",
+  "0xc8f8e2f59dd95ff67c3d39109eca2e2a017d4c8a": "Visualize Value"
+};
+const RPCS = [
+  "https://ethereum-rpc.publicnode.com",
+  "https://eth.llamarpc.com",
+  "https://eth.drpc.org",
+  "https://1rpc.io/eth"
+];
+const SEL = {
+  balanceOf: "70a08231", historyOf: "0bb4b6aa", inkOf: "e7296cc1",
+  totalSupply: "18160ddd", tokenIdOf: "773c02d4", tokenURI: "c87b56dd", page: "b7134dfa"
+};
+const INK = ["Cyan", "Magenta", "Yellow", "Black"];
+const INK_HEX = ["#00a0dc", "#e4007c", "#f2d400", "#151616"];
+const E18 = 10n ** 18n;
+
+const $ = (s) => document.querySelector(s);
+const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+
+/* ---------- RPC ---------- */
+let rpcIdx = 0, reqId = 1;
+function setNet(state, text) {
+  $("#netdot").className = "dot " + (state || "");
+  $("#nettext").textContent = text;
+}
+async function post(url, body) {
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), 20000);
+  try {
+    const r = await fetch(url, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body), signal: ctrl.signal });
+    if (!r.ok) throw new Error("HTTP " + r.status);
+    return await r.json();
+  } finally { clearTimeout(t); }
+}
+async function rpcSend(body) {
+  let last;
+  for (let i = 0; i < RPCS.length; i++) {
+    const idx = (rpcIdx + i) % RPCS.length;
+    try {
+      const res = await post(RPCS[idx], body);
+      if (Array.isArray(body) && !Array.isArray(res)) throw new Error("Batch not supported");
+      rpcIdx = idx;
+      setNet("ok", "Live · Ethereum mainnet");
+      return res;
+    } catch (e) { last = e; }
+  }
+  setNet("err", "Can't reach Ethereum nodes");
+  throw last || new Error("No node reachable");
+}
+const ethCallReq = (to, data) => ({ method: "eth_call", params: [{ to, data: "0x" + data }, "latest"] });
+async function single(req) {
+  const res = await rpcSend({ jsonrpc: "2.0", id: reqId++, ...req });
+  if (res.error) throw new Error(res.error.message || "Call failed");
+  return res.result;
+}
+async function pool(items, n, fn) {
+  const out = new Array(items.length); let i = 0;
+  await Promise.all(Array.from({ length: Math.min(n, items.length) }, async () => {
+    while (i < items.length) { const k = i++; out[k] = await fn(items[k], k); }
+  }));
+  return out;
+}
+/* Sends many calls as JSON-RPC batches; retries any that came back empty one by one. */
+async function batch(reqs, size = 40, onProgress) {
+  const out = new Array(reqs.length).fill(null);
+  const chunks = [];
+  for (let i = 0; i < reqs.length; i += size) chunks.push(i);
+  let done = 0;
+  await pool(chunks, 3, async (start) => {
+    const part = reqs.slice(start, start + size);
+    const body = part.map((r, j) => ({ jsonrpc: "2.0", id: start + j, ...r }));
+    try {
+      const res = await rpcSend(body);
+      for (const x of res) if (x && !x.error && typeof x.id === "number") out[x.id] = x.result;
+    } catch (e) { /* fall through to retries */ }
+    done += part.length; if (onProgress) onProgress(done / reqs.length);
+  });
+  // Retry anything that came back empty: small batches first, then one by one only if few remain.
+  let missing = out.map((v, i) => (v == null ? i : -1)).filter((i) => i >= 0);
+  for (let pass = 0; pass < 2 && missing.length > 20; pass++) {
+    const groups = [];
+    for (let i = 0; i < missing.length; i += 10) groups.push(missing.slice(i, i + 10));
+    await pool(groups, 2, async (g) => {
+      try {
+        const res = await rpcSend(g.map((idx) => ({ jsonrpc: "2.0", id: idx, ...reqs[idx] })));
+        for (const x of res) if (x && !x.error && typeof x.id === "number") out[x.id] = x.result;
+      } catch (e) { /* try again next pass */ }
+    });
+    missing = missing.filter((i) => out[i] == null);
+  }
+  if (missing.length <= 40) await pool(missing, 4, async (i) => { try { out[i] = await single(reqs[i]); } catch (e) { out[i] = null; } });
+  return out;
+}
+
+/* ---------- ABI ---------- */
+const pad = (h) => h.padStart(64, "0");
+const encAddr = (a) => pad(a.toLowerCase().replace(/^0x/, ""));
+const encUint = (n) => pad(BigInt(n).toString(16));
+const word = (hex, i) => BigInt("0x" + (hex.slice(2 + i * 64, 2 + (i + 1) * 64) || "0"));
+const wordAddr = (hex, i) => "0x" + hex.slice(2 + i * 64 + 24, 2 + (i + 1) * 64);
+function decString(hex) {
+  const off = Number(word(hex, 0)) / 32;
+  const len = Number(word(hex, off));
+  const start = 2 + (off + 1) * 64;
+  const h = hex.slice(start, start + len * 2);
+  const bytes = new Uint8Array(len);
+  for (let i = 0; i < len; i++) bytes[i] = parseInt(h.substr(i * 2, 2), 16);
+  return new TextDecoder().decode(bytes);
+}
+function decPage(hex) {
+  const o1 = Number(word(hex, 0)) / 32, o2 = Number(word(hex, 1)) / 32;
+  const n = Number(word(hex, o1));
+  const wallets = [], balances = [];
+  for (let i = 0; i < n; i++) { wallets.push(wordAddr(hex, o1 + 1 + i)); balances.push(word(hex, o2 + 1 + i)); }
+  return { wallets, balances };
+}
+const HIST_KEYS = ["firstReceipt", "received", "sent", "transfersIn", "transfersOut", "contributed", "statements", "peak", "emptied", "comebacks"];
+function decHistory(hex) {
+  if (!hex || hex.length < 2 + 64 * 10) return null;
+  const h = {}; HIST_KEYS.forEach((k, i) => (h[k] = word(hex, i))); return h;
+}
+function decInk(hex) {
+  if (!hex || hex.length < 2 + 64 * 4) return [0n, 0n, 0n, 0n];
+  return [0, 1, 2, 3].map((i) => word(hex, i));
+}
+function decodeDataUri(uri) {
+  const m = /^data:([^;,]+)(;base64)?,(.*)$/s.exec(uri || "");
+  if (!m) return null;
+  if (!m[2]) return decodeURIComponent(m[3]);
+  const bin = atob(m[3]); const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  return new TextDecoder().decode(bytes);
+}
+
+/* ---------- Formatting ---------- */
+const toNum = (wei) => Number(wei / 10n ** 12n) / 1e6;
+function fmtBal(wei) {
+  if (wei === 0n) return "0";
+  if (wei < E18 / 100n) return "<0.01";
+  const n = toNum(wei);
+  return n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+const fmtInt = (b) => Number(b).toLocaleString("en-US");
+const short = (a) => a.slice(0, 6) + "…" + a.slice(-4);
+function inkPct(ink) {
+  const sum = ink.reduce((a, b) => a + b, 0n);
+  if (sum === 0n) return [0, 0, 0, 0];
+  return ink.map((v) => Number((v * 100000n) / sum) / 1000);
+}
+function entropy(p) {
+  let h = 0; for (const x of p) if (x > 0) { const q = x / 100; h -= q * Math.log(q); }
+  return h / Math.log(4);
+}
+function fmtDate(ts) {
+  const n = Number(ts); if (!n) return "—";
+  if (n < 1e9) return "Block " + fmtInt(n);
+  return new Date(n * 1000).toLocaleDateString("en-US", { year: "numeric", month: "short", day: "numeric" });
+}
+function inkBar(p) {
+  return '<div class="inkbar" title="' + INK.map((n, i) => n + " " + p[i].toFixed(1) + "%").join(" · ") + '">' +
+    p.map((x, i) => '<span class="' + ["ic", "im", "iy", "ik"][i] + '" style="width:' + x + '%"></span>').join("") + "</div>";
+}
+let toastTimer;
+function toast(t) {
+  const el = $("#toast"); el.textContent = t; el.hidden = false;
+  clearTimeout(toastTimer); toastTimer = setTimeout(() => (el.hidden = true), 2200);
+}
+
+/* ---------- Register (all wallets) ---------- */
+let rows = [], byAddr = new Map(), shown = 50, galleryShown = 0, currentAddr = null;
+const state = { sort: "balance", ink: "all", q: "", hideContracts: true };
+const CACHE_KEY = "balance-ledger-v1";
+
+function progress(f) {
+  $("#progress").hidden = f >= 1;
+  $("#progressBar").style.width = Math.round(f * 100) + "%";
+}
+function serialize(r) { return { ...r, bal: r.bal.toString(), ink: r.ink.map(String), hist: r.hist ? Object.fromEntries(Object.entries(r.hist).map(([k, v]) => [k, v.toString()])) : null }; }
+function revive(r) { return { ...r, bal: BigInt(r.bal), ink: r.ink.map(BigInt), hist: r.hist ? Object.fromEntries(Object.entries(r.hist).map(([k, v]) => [k, BigInt(v)])) : null }; }
+
+/* Snapshot rows: [addr, id, bal, peak, transfersIn, transfersOut, comebacks, emptied,
+   statements, firstReceipt, received, sent, inkC, inkM, inkY, inkK, contract, label] */
+function fromSnapshotRow(a) {
+  const B = (x) => BigInt(x || 0);
+  return {
+    addr: a[0], id: a[1], bal: B(a[2]), ink: [B(a[12]), B(a[13]), B(a[14]), B(a[15])],
+    hist: { peak: B(a[3]), transfersIn: B(a[4]), transfersOut: B(a[5]), comebacks: B(a[6]), emptied: B(a[7]),
+      statements: B(a[8]), firstReceipt: B(a[9]), received: B(a[10]), sent: B(a[11]), contributed: 0n },
+    contract: !!a[16], label: a[17] || undefined
+  };
+}
+async function loadSnapshot() {
+  try {
+    const r = await fetch("data/register.json", { cache: "no-cache" });
+    if (!r.ok) return false;
+    const snap = await r.json();
+    if (!snap || !Array.isArray(snap.rows) || !snap.rows.length) return false;
+    setRows(snap.rows.map(fromSnapshotRow), snap.t, "Snapshot");
+    return true;
+  } catch (e) { return false; }
+}
+
+async function loadRegister(force) {
+  if (!force) {
+    if (await loadSnapshot()) return;
+    try {
+      const c = JSON.parse(localStorage.getItem(CACHE_KEY) || "null");
+      if (c && Date.now() - c.t < 10 * 60 * 1000) { setRows(c.rows.map(revive), c.t); return; }
+    } catch (e) { /* no cache */ }
+  }
+  $("#refreshBtn").disabled = true;
+  progress(0.02);
+  try {
+    const total = Number(word(await single(ethCallReq(ART, SEL.totalSupply)), 0));
+    const pageReqs = [];
+    for (let s = 0; s < total; s += 64) pageReqs.push(ethCallReq(ART, SEL.page + encUint(s) + encUint(64)));
+    const pages = await batch(pageReqs, 10, (f) => progress(0.02 + f * 0.13));
+    const list = [];
+    pages.forEach((hex, pi) => {
+      if (!hex) return;
+      const { wallets, balances } = decPage(hex);
+      wallets.forEach((w, i) => list.push({ addr: w.toLowerCase(), id: pi * 64 + i + 1, bal: balances[i], ink: [0n, 0n, 0n, 0n], hist: null }));
+    });
+    list.forEach((r) => { if (KNOWN[r.addr]) { r.label = KNOWN[r.addr]; if (r.addr !== "0xc8f8e2f59dd95ff67c3d39109eca2e2a017d4c8a") r.contract = true; } });
+
+    // Show the balance ranking right away; history and ink fill in behind it.
+    setRows(list, Date.now(), "Loading details");
+
+    const top = [...list].sort((a, b) => (b.bal > a.bal ? 1 : b.bal < a.bal ? -1 : 0)).slice(0, 60);
+    const codes = await batch(top.map((r) => ({ method: "eth_getCode", params: [r.addr, "latest"] })), 30);
+    top.forEach((r, i) => { if (codes[i] && codes[i] !== "0x") r.contract = true; });
+
+    // Details in balance order so the top of the table completes first.
+    const order = [...list].sort((a, b) => (b.bal > a.bal ? 1 : b.bal < a.bal ? -1 : 0));
+    const CH = 200;
+    for (let s = 0; s < order.length; s += CH) {
+      const part = order.slice(s, s + CH);
+      const reqs = [];
+      for (const r of part) { reqs.push(ethCallReq(TOKEN, SEL.historyOf + encAddr(r.addr))); reqs.push(ethCallReq(TOKEN, SEL.inkOf + encAddr(r.addr))); }
+      const res = await batch(reqs, 20);
+      part.forEach((r, i) => { r.hist = decHistory(res[i * 2]); r.ink = decInk(res[i * 2 + 1]); });
+      progress(0.15 + 0.85 * Math.min(1, (s + CH) / order.length));
+      setRows(list, Date.now(), s + CH < order.length ? "Loading details" : "Live", true);
+    }
+
+    progress(1);
+    const t = Date.now();
+    try { localStorage.setItem(CACHE_KEY, JSON.stringify({ t, rows: list.map(serialize) })); } catch (e) { /* storage full or blocked */ }
+  } catch (e) {
+    progress(1);
+    if (!rows.length) $("#tbody").innerHTML = '<tr><td colspan="8">Couldn\'t read the register from Ethereum. The public nodes may be busy. Try "Read live now" in a minute.</td></tr>';
+  } finally {
+    $("#refreshBtn").disabled = false;
+  }
+}
+
+function setRows(list, t, source, keepView) {
+  rows = list.map((r) => {
+    const p = inkPct(r.ink);
+    const h = r.hist || {};
+    return { ...r, p, lead: r.bal > 0n ? p.indexOf(Math.max(...p)) : -1, ent: entropy(p),
+      active: Number((h.transfersIn || 0n) + (h.transfersOut || 0n)) };
+  });
+  byAddr = new Map(rows.map((r) => [r.addr, r]));
+  const when = new Date(t).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  $("#updated").textContent = (source === "Snapshot" ? "Snapshot from " : source === "Loading details" ? "Loading details · balances from " : "Updated ") + when;
+  renderSummary();
+  if (!keepView) { shown = 50; }
+  renderTable();
+  if (!keepView || !galleryShown) { galleryShown = 0; $("#gallery").innerHTML = ""; renderGallery(); }
+  if (currentAddr) markRank(currentAddr);
+}
+
+function renderSummary() {
+  const people = rows.filter((r) => !r.contract);
+  const holding = people.filter((r) => r.bal > 0n).length;
+  const zero = people.length - holding;
+  const statements = people.reduce((a, r) => a + Number(r.hist ? r.hist.statements : 0n), 0);
+  const ink = [0n, 0n, 0n, 0n]; people.forEach((r) => r.ink.forEach((v, i) => (ink[i] += v)));
+  const p = inkPct(ink);
+  $("#regCount").textContent = fmtInt(rows.length) + " artworks";
+  $("#summary").innerHTML =
+    '<div><span class="label">Artworks</span><b>' + fmtInt(rows.length) + "</b></div>" +
+    '<div><span class="label">Holding BALANCE</span><b>' + fmtInt(holding) + "</b></div>" +
+    '<div><span class="label">At zero</span><b>' + fmtInt(zero) + "</b></div>" +
+    '<div><span class="label">Statements converted</span><b>' + fmtInt(statements) + "</b></div>" +
+    '<div><span class="label">Ink across all wallets</span><div style="margin-top:8px">' + inkBar(p) + "</div></div>";
+}
+
+function filtered() {
+  let list = rows;
+  if (state.hideContracts) list = list.filter((r) => !r.contract);
+  if (state.ink === "zero") list = list.filter((r) => r.bal === 0n);
+  else if (state.ink !== "all") list = list.filter((r) => r.lead === Number(state.ink));
+  const q = state.q.trim().toLowerCase();
+  if (q) {
+    const num = q.replace(/^#/, "");
+    list = list.filter((r) => r.addr.includes(q) || (/^\d+$/.test(num) && String(r.id) === num));
+  }
+  const H = (r, k) => (r.hist ? r.hist[k] : 0n);
+  const cmp = (a, b) => (a > b ? -1 : a < b ? 1 : 0);
+  const sorters = {
+    balance: (a, b) => cmp(a.bal, b.bal) || a.id - b.id,
+    peak: (a, b) => cmp(H(a, "peak"), H(b, "peak")) || a.id - b.id,
+    active: (a, b) => b.active - a.active || a.id - b.id,
+    comebacks: (a, b) => cmp(H(a, "comebacks"), H(b, "comebacks")) || a.id - b.id,
+    emptied: (a, b) => cmp(H(a, "emptied"), H(b, "emptied")) || a.id - b.id,
+    statements: (a, b) => cmp(H(a, "statements"), H(b, "statements")) || cmp(a.bal, b.bal),
+    balanced: (a, b) => (b.bal > 0n) - (a.bal > 0n) || b.ent - a.ent || cmp(a.bal, b.bal),
+    earliest: (a, b) => a.id - b.id
+  };
+  return [...list].sort(sorters[state.sort]);
+}
+
+function renderTable() {
+  const list = filtered();
+  if (!list.length) {
+    $("#tbody").innerHTML = '<tr><td colspan="8" style="color:var(--muted)">No wallets match these filters.</td></tr>';
+    $("#moreBtn").hidden = true; return;
+  }
+  $("#tbody").innerHTML = list.slice(0, shown).map((r, i) => {
+    const h = r.hist || {};
+    return '<tr data-addr="' + r.addr + '"' + (r.addr === currentAddr ? ' class="me"' : "") + ">" +
+      '<td class="rank">' + (i + 1) + "</td>" +
+      "<td>#" + fmtInt(r.id) + "</td>" +
+      '<td><span class="who">' + short(r.addr) + (r.label ? ' <span class="ctag">' + esc(r.label) + "</span>" : r.contract ? ' <span class="ctag">Contract</span>' : "") + "</span></td>" +
+      '<td class="num">' + fmtBal(r.bal) + "</td>" +
+      '<td class="ink">' + inkBar(r.p) + "</td>" +
+      '<td class="num hide-sm">' + fmtBal(h.peak || 0n) + "</td>" +
+      '<td class="num hide-sm">' + fmtInt(r.active) + "</td>" +
+      '<td class="num hide-sm">' + fmtInt(h.comebacks || 0n) + "</td></tr>";
+  }).join("");
+  $("#moreBtn").hidden = list.length <= shown;
+}
+
+/* ---------- Gallery ---------- */
+const artCache = new Map();
+async function artFor(id) {
+  if (artCache.has(id)) return artCache.get(id);
+  const p = (async () => {
+    const uri = decString(await single(ethCallReq(ART, SEL.tokenURI + encUint(id))));
+    return JSON.parse(decodeDataUri(uri) || uri);
+  })();
+  p.catch(() => artCache.delete(id));
+  artCache.set(id, p);
+  return p;
+}
+async function renderGallery() {
+  const list = filtered().slice(galleryShown, galleryShown + 12);
+  galleryShown += list.length;
+  $("#galleryMore").hidden = galleryShown >= filtered().length;
+  const g = $("#gallery");
+  const cards = list.map((r) => {
+    const b = document.createElement("button");
+    b.type = "button"; b.className = "card"; b.dataset.addr = r.addr;
+    b.innerHTML = '<div class="artframe"><div class="placeholder">#' + fmtInt(r.id) + "</div></div>" +
+      '<div class="meta"><b>#' + fmtInt(r.id) + "</b><span>" + fmtBal(r.bal) + "</span></div>";
+    g.appendChild(b); return { b, r };
+  });
+  await pool(cards, 4, async ({ b, r }) => {
+    try {
+      const meta = await artFor(r.id);
+      if (meta.image) b.querySelector(".artframe").innerHTML = '<img alt="Balance #' + r.id + '" src="' + esc(meta.image) + '">';
+    } catch (e) { b.querySelector(".placeholder").textContent = "Image unavailable"; }
+  });
+}
+
+/* ---------- Single wallet ---------- */
+function showMsg(t) { const m = $("#lookupMsg"); m.textContent = t; m.hidden = !t; }
+const isAddr = (a) => /^0x[0-9a-fA-F]{40}$/.test(a);
+
+async function lookup(addrRaw, { scroll } = {}) {
+  const addr = (addrRaw || "").trim();
+  if (!isAddr(addr)) { showMsg("That doesn't look like a wallet address. Paste a full 0x address (42 characters)."); return; }
+  const a = addr.toLowerCase();
+  currentAddr = a;
+  showMsg("");
+  $("#addrInput").value = addr;
+  try { history.replaceState(null, "", "?address=" + a); } catch (e) { /* not allowed in this frame */ }
+
+  let res;
+  try {
+    res = await batch([
+      ethCallReq(ART, SEL.tokenIdOf + encAddr(a)),
+      ethCallReq(TOKEN, SEL.balanceOf + encAddr(a)),
+      ethCallReq(TOKEN, SEL.historyOf + encAddr(a)),
+      ethCallReq(TOKEN, SEL.inkOf + encAddr(a))
+    ], 10);
+  } catch (e) { showMsg("Couldn't reach Ethereum right now. Try again in a minute."); return; }
+  const id = res[0] ? Number(word(res[0], 0)) : 0;
+  if (!id) {
+    $("#proof").hidden = true;
+    showMsg("This wallet has never received BALANCE, so it has no artwork yet. Receiving any amount, even a tiny one, creates it.");
+    return;
+  }
+  const w = { addr: a, id, bal: res[1] ? word(res[1], 0) : 0n, hist: decHistory(res[2]) || {}, ink: decInk(res[3]) };
+  w.p = inkPct(w.ink);
+  current = w;
+  renderProof(w);
+  $("#proof").hidden = false;
+  markRank(a);
+  if (scroll) $("#proof").scrollIntoView({ behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth", block: "start" });
+
+  $("#artImg").hidden = true; $("#artPlaceholder").hidden = false; $("#artPlaceholder").textContent = "Loading artwork";
+  try {
+    const meta = await artFor(id);
+    if (current !== w) return;
+    if (meta.image) { $("#artImg").src = meta.image; $("#artImg").alt = "Balance #" + id; $("#artImg").hidden = false; $("#artPlaceholder").hidden = true; }
+  } catch (e) { $("#artPlaceholder").textContent = "Artwork image unavailable"; }
+}
+let current = null;
+
+function renderProof(w) {
+  const h = w.hist;
+  $("#pId").textContent = "#" + fmtInt(w.id);
+  $("#pBal").textContent = fmtBal(w.bal);
+  $("#pAddr").textContent = w.addr;
+  $("#etherscanLink").href = "https://etherscan.io/token/" + TOKEN + "?a=" + w.addr;
+  const tags = [];
+  if (w.bal === 0n) tags.push('<span class="tag zero">At zero</span>');
+  if (w.bal > 0n) tags.push('<span class="tag">' + INK[w.p.indexOf(Math.max(...w.p))] + "-led</span>");
+  if (h.statements > 0n) tags.push('<span class="tag">Converted ' + fmtInt(h.statements) + (h.statements === 1n ? " Statement" : " Statements") + "</span>");
+  if (h.emptied === 0n && w.bal > 0n) tags.push('<span class="tag">Never emptied</span>');
+  if (h.comebacks > 0n) tags.push('<span class="tag">Back from zero ×' + fmtInt(h.comebacks) + "</span>");
+  $("#pTags").innerHTML = tags.join("") + '<span class="tag" id="pRank" hidden></span>';
+  $("#pPlates").innerHTML = INK.map((n, i) =>
+    '<div class="plate"><span>' + n + '</span><span class="track"><span class="fill ' + ["ic", "im", "iy", "ik"][i] + '" style="width:' + w.p[i] + '%"></span></span><span class="pct">' + w.p[i].toFixed(2) + "%</span></div>").join("");
+  const items = [
+    ["First received", fmtDate(h.firstReceipt)],
+    ["Peak balance", fmtBal(h.peak || 0n)],
+    ["Transfers in", fmtInt(h.transfersIn || 0n)],
+    ["Transfers out", fmtInt(h.transfersOut || 0n)],
+    ["Total received", fmtBal(h.received || 0n)],
+    ["Total sent", fmtBal(h.sent || 0n)],
+    ["Statements converted", fmtInt(h.statements || 0n)],
+    ["Times emptied", fmtInt(h.emptied || 0n)],
+    ["Returns from zero", fmtInt(h.comebacks || 0n)]
+  ];
+  $("#pLedger").innerHTML = items.map(([k, v]) => "<div><dt>" + k + "</dt><dd>" + v + "</dd></div>").join("");
+}
+
+function markRank(a) {
+  const el = $("#pRank"); if (!el || !rows.length) return;
+  const r = byAddr.get(a);
+  if (!r || r.bal === 0n || r.contract) { el.hidden = true; return; }
+  const people = rows.filter((x) => !x.contract && x.bal > 0n).sort((x, y) => (y.bal > x.bal ? 1 : y.bal < x.bal ? -1 : 0));
+  const rank = people.findIndex((x) => x.addr === a) + 1;
+  el.textContent = "Rank " + fmtInt(rank) + " of " + fmtInt(people.length) + " by balance";
+  el.hidden = false;
+  renderTable();
+}
+
+/* ---------- Share card ---------- */
+async function shareCard() {
+  const w = current; if (!w) return;
+  const btn = $("#shareBtn"); btn.disabled = true;
+  try {
+    await document.fonts.ready;
+    const W = 1600, H = 900, cv = document.createElement("canvas");
+    cv.width = W; cv.height = H;
+    const g = cv.getContext("2d");
+    g.fillStyle = "#f7f7f3"; g.fillRect(0, 0, W, H);
+    INK_HEX.forEach((c, i) => { g.fillStyle = c; g.fillRect(i * W / 4, 0, W / 4, 12); });
+
+    // artwork on a white proof with crop marks
+    const ax = 90, ay = 110, aw = 544, ah = 680;
+    g.fillStyle = "#ffffff"; g.fillRect(ax, ay, aw, ah);
+    g.strokeStyle = "#dcddd6"; g.lineWidth = 2; g.strokeRect(ax, ay, aw, ah);
+    g.strokeStyle = "#9a9a95"; g.lineWidth = 2;
+    [[ax, ay, -1, -1], [ax + aw, ay, 1, -1], [ax, ay + ah, -1, 1], [ax + aw, ay + ah, 1, 1]].forEach(([x, y, dx, dy]) => {
+      g.beginPath(); g.moveTo(x + dx * 8, y); g.lineTo(x + dx * 30, y); g.moveTo(x, y + dy * 8); g.lineTo(x, y + dy * 30); g.stroke();
+    });
+    const meta = await artFor(w.id).catch(() => ({}));
+    if (meta.image) {
+      const img = new Image(); img.src = meta.image; await img.decode();
+      const s = Math.min((aw - 40) / img.width, (ah - 40) / img.height);
+      const iw = img.width * s, ih = img.height * s;
+      g.drawImage(img, ax + (aw - iw) / 2, ay + (ah - ih) / 2, iw, ih);
+    }
+
+    const tx = 720;
+    g.fillStyle = "#5d6063"; g.font = "500 22px 'Martian Mono', monospace";
+    g.fillText("BALANCE ARTWORK", tx, 160);
+    g.fillStyle = "#151616"; g.font = "850 120px 'Archivo', Arial, sans-serif";
+    g.fillText("#" + fmtInt(w.id), tx, 280);
+    g.font = "500 64px 'Martian Mono', monospace";
+    g.fillText(fmtBal(w.bal), tx, 370);
+    g.fillStyle = "#5d6063"; g.font = "400 24px 'Martian Mono', monospace";
+    g.fillText(short(w.addr) + "  ·  BALANCE", tx, 412);
+
+    // plates
+    let y = 480;
+    INK.forEach((n, i) => {
+      g.fillStyle = "#151616"; g.font = "500 22px 'Martian Mono', monospace"; g.fillText(n.toUpperCase(), tx, y + 18);
+      g.fillStyle = "#e7e8e2"; g.fillRect(tx + 170, y, 520, 22);
+      g.fillStyle = INK_HEX[i]; g.fillRect(tx + 170, y, 520 * w.p[i] / 100, 22);
+      g.fillStyle = "#151616"; g.textAlign = "right"; g.fillText(w.p[i].toFixed(1) + "%", tx + 790, y + 18); g.textAlign = "left";
+      y += 44;
+    });
+
+    const h = w.hist;
+    const facts = [["PEAK", fmtBal(h.peak || 0n)], ["TRANSFERS", fmtInt((h.transfersIn || 0n) + (h.transfersOut || 0n))], ["FROM ZERO", fmtInt(h.comebacks || 0n)]];
+    facts.forEach(([k, v], i) => {
+      const fx = tx + i * 270;
+      g.fillStyle = "#5d6063"; g.font = "500 18px 'Martian Mono', monospace"; g.fillText(k, fx, 720);
+      g.fillStyle = "#151616"; g.font = "700 34px 'Martian Mono', monospace"; g.fillText(v, fx, 764);
+    });
+    g.fillStyle = "#5d6063"; g.font = "400 18px 'Martian Mono', monospace";
+    g.fillText("BALANCE LEDGER · READ FROM ETHEREUM", tx, 830);
+
+    const blob = await new Promise((r) => cv.toBlob(r, "image/png"));
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a"); a.href = url; a.download = "balance-" + w.id + ".png";
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 5000);
+    toast("Share card downloaded");
+  } catch (e) {
+    toast("Couldn't build the card. Try again.");
+  } finally { btn.disabled = false; }
+}
+
+/* ---------- Wiring ---------- */
+$("#lookupForm").addEventListener("submit", (e) => { e.preventDefault(); lookup($("#addrInput").value); });
+$("#connectBtn").addEventListener("click", async () => {
+  if (!window.ethereum) { showMsg("No browser wallet found. Paste your address instead."); return; }
+  try {
+    const acc = await window.ethereum.request({ method: "eth_requestAccounts" });
+    if (acc && acc[0]) lookup(acc[0]);
+  } catch (e) { showMsg("The wallet didn't share an address. You can paste it instead."); }
+});
+$("#shareBtn").addEventListener("click", shareCard);
+$("#copyLinkBtn").addEventListener("click", async () => {
+  const link = location.origin + location.pathname + "?address=" + currentAddr;
+  try { await navigator.clipboard.writeText(link); toast("Link copied"); }
+  catch (e) { $("#addrInput").value = link; $("#addrInput").select(); toast("Select and copy the link"); }
+});
+$("#sortSel").addEventListener("change", (e) => { state.sort = e.target.value; shown = 50; renderTable(); resetGallery(); });
+$("#hideContracts").addEventListener("change", (e) => { state.hideContracts = e.target.checked; shown = 50; renderTable(); resetGallery(); });
+let searchT;
+$("#searchBox").addEventListener("input", (e) => { clearTimeout(searchT); searchT = setTimeout(() => { state.q = e.target.value; shown = 50; renderTable(); resetGallery(); }, 150); });
+$("#inkChips").addEventListener("click", (e) => {
+  const b = e.target.closest(".chip"); if (!b) return;
+  document.querySelectorAll("#inkChips .chip").forEach((c) => c.setAttribute("aria-pressed", String(c === b)));
+  state.ink = b.dataset.ink; shown = 50; renderTable(); resetGallery();
+});
+$("#moreBtn").addEventListener("click", () => { shown += 50; renderTable(); });
+$("#refreshBtn").addEventListener("click", () => loadRegister(true));
+$("#galleryMore").addEventListener("click", renderGallery);
+function resetGallery() { galleryShown = 0; $("#gallery").innerHTML = ""; if (rows.length) renderGallery(); }
+function openFromList(e) {
+  const el = e.target.closest("[data-addr]"); if (!el) return;
+  lookup(el.dataset.addr, { scroll: true });
+}
+$("#tbody").addEventListener("click", openFromList);
+$("#gallery").addEventListener("click", openFromList);
+
+(function init() {
+  const q = new URLSearchParams(location.search).get("address");
+  if (q && isAddr(q)) lookup(q);
+  loadRegister(false);
+})();
+</script>
+</body>
+</html>
